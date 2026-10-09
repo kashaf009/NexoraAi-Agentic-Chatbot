@@ -58,22 +58,28 @@ if user_input:
     # Get chatbot response
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
+            ai_message = st.write_stream(
+                message_chunk.content for message_chunk , metadate in chatbot.stream(
+                                {
+                                    "messages": [
+                                        HumanMessage(content=user_input)
+                                    ]
+                                },
+                                config=config,
+                                stream_mode="messages"
+                            )
 
-            response = chatbot.invoke(
-                {
-                    "messages": [
-                        HumanMessage(content=user_input)
-                    ]
-                },
-                config=config
+
             )
 
-            answer = response["messages"][-1].content
+            
+                
 
-        st.markdown(answer)
+    
+        
 
     # Save assistant response
     st.session_state.messages.append({
         "role": "assistant",
-        "content": answer
+        "content": ai_message
     })

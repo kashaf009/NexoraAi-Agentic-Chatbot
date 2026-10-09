@@ -15,7 +15,7 @@ def llm():
         api_key=os.getenv("EURON_API_KEY"),
         model="gpt-4o-mini",
         base_url=os.getenv("EURI_BASE_URL"),
-        max_completion_tokens=500
+        max_completion_tokens=1000
     )
 
 
