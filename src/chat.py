@@ -3,9 +3,10 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph,START,END
 from langchain_core.messages import BaseMessage, HumanMessage
 from dotenv import load_dotenv
-from langgraph.checkpoint.memory import MemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver  
 from langgraph.graph.message import add_messages
 import os
+import sqlite3
 
 
 load_dotenv()
@@ -35,8 +36,8 @@ def chat(state : ChatState):
 
     return {"messages":[response]}
 
-
-checkpointer = MemorySaver()
+con= sqlite3.connect(database="chatbot.db",check_same_thread=False)
+checkpointer = SqliteSaver(conn=con)
 graph = StateGraph(ChatState)
 
 graph.add_node("chat_node",chat)
