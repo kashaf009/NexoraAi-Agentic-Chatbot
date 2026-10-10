@@ -48,6 +48,13 @@ graph.add_edge("chat_node",END)
 
 chatbot = graph.compile(checkpointer=checkpointer)
 
+def get_all_threads():
+    all_threads = set()
+    for cpoint in checkpointer.list(None):
+        all_threads.add(cpoint.config["configurable"]["thread_id"])
+
+    return list(all_threads)
+
 
 
 
