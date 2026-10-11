@@ -7,6 +7,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.message import add_messages
 import os
 import sqlite3
+from langsmith import traceable
 
 
 load_dotenv()
