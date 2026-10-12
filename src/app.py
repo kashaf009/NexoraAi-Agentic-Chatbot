@@ -1,8 +1,7 @@
 import uuid
 import streamlit as st
-from langchain_core.messages import HumanMessage, AIMessage
-from chat import chatbot,get_all_threads
-
+from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from chat import chatbot, get_all_threads
 
 
 # =====================================================
@@ -256,6 +255,14 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
     font-size: 14px;
 }
 
+/* Tool call cards */
+[data-testid="stStatus"] {
+    background: rgba(155,140,255,.06) !important;
+    border: 1px solid rgba(155,140,255,.22) !important;
+    border-radius: 14px !important;
+    margin-bottom: 10px;
+}
+
 /* Chat input */
 [data-testid="stChatInput"] {
     border: 1px solid rgba(155,140,255,.32) !important;
@@ -313,7 +320,7 @@ hr {
 
 
 # =====================================================
-# THREAD MANAGEMENT
+# HELPERS
 # =====================================================
 def generate_thread_id():
     return str(uuid.uuid4())
@@ -330,56 +337,79 @@ def reset_chat():
     add_thread(st.session_state["thread_id"])
 
 
-def load_conversation(thread_id):
-    state = chatbot.get_state(
-        config={
-            "configurable": {
-                "thread_id": thread_id
-            }
-        }
-    )
-    return state.values.get("messages", [])
+def pretty_tool_name(name):
+    """search_tool -> Search Tool"""
+    return (name or "tool").replace("_", " ").strip().title()
 
 
-def message_to_text(message):
-    content = message.content
-
+def chunk_text(content):
+    """Extract only plain text from a message content (str or list of blocks).
+    Tool-use blocks, JSON and other non-text blocks are ignored."""
     if isinstance(content, str):
         return content
 
     if isinstance(content, list):
         parts = []
-
         for item in content:
             if isinstance(item, str):
                 parts.append(item)
             elif isinstance(item, dict) and item.get("type") == "text":
                 parts.append(item.get("text", ""))
-
-        return "\n".join(parts)
+        return "".join(parts)
 
     return ""
+
+
+def render_tool_cards(tools):
+    """Show finished tool calls (used when re-displaying history)."""
+    for tool_name in tools:
+        with st.status(
+            f"🔧 {pretty_tool_name(tool_name)}",
+            state="complete",
+            expanded=False,
+        ):
+            st.caption("Tool call completed.")
+
+
+def load_conversation(thread_id):
+    state = chatbot.get_state(
+        config={"configurable": {"thread_id": thread_id}}
+    )
+    return state.values.get("messages", [])
 
 
 def load_thread(thread_id):
     messages = load_conversation(thread_id)
     temp_messages = []
+    pending_tools = []
 
     for message in messages:
-        if isinstance(message, HumanMessage):
-            role = "user"
-        elif isinstance(message, AIMessage):
-            role = "assistant"
-        else:
+        # Tool results (raw output) are never shown
+        if isinstance(message, ToolMessage):
             continue
 
-        content = message_to_text(message)
+        if isinstance(message, HumanMessage):
+            text = chunk_text(message.content)
+            if text:
+                temp_messages.append({"role": "user", "content": text})
+            pending_tools = []
 
-        if content:
-            temp_messages.append({
-                "role": role,
-                "content": content
-            })
+        elif isinstance(message, AIMessage):
+            tool_calls = getattr(message, "tool_calls", None) or []
+
+            # AI turn that decides to call tools: remember them, skip any preamble text
+            if tool_calls:
+                pending_tools.extend(tc["name"] for tc in tool_calls)
+                continue
+
+            text = chunk_text(message.content)
+            if text:
+                temp_messages.append({
+                    "role": "assistant",
+                    "content": text,
+                    "tools": pending_tools,
+                })
+                pending_tools = []
 
     st.session_state["thread_id"] = thread_id
     st.session_state["messages"] = temp_messages
@@ -563,6 +593,8 @@ else:
 
     for message in st.session_state["messages"]:
         with st.chat_message(message["role"]):
+            if message["role"] == "assistant" and message.get("tools"):
+                render_tool_cards(message["tools"])
             st.markdown(message["content"])
 
 
@@ -593,41 +625,85 @@ if user_input:
 
     with st.chat_message("assistant"):
 
+        # Tool cards appear above the answer
+        tools_area = st.container()
+        answer_area = st.empty()
+
+        tool_cards = {}      # key -> st.status object
+        tools_used = []      # tool names, saved with the message
+        final_text = ""
+
         try:
-            with st.spinner("Nexora is thinking..."):
+            answer_area.markdown("_Nexora is thinking..._")
 
-                def response_stream():
-                    for message_chunk, metadata in chatbot.stream(
-                        {
-                            "messages": [
-                                HumanMessage(content=user_input)
-                            ]
-                        },
-                        config=config,
-                        stream_mode="messages"
-                    ):
-                        if not isinstance(message_chunk, AIMessage):
-                            continue
+            for message_chunk, metadata in chatbot.stream(
+                {"messages": [HumanMessage(content=user_input)]},
+                config=config,
+                stream_mode="messages"
+            ):
 
-                        content = message_chunk.content
+                # 1) Tool finished -> mark its card as complete.
+                #    The raw tool output is NOT displayed anywhere.
+                if isinstance(message_chunk, ToolMessage):
+                    key = (
+                        getattr(message_chunk, "tool_call_id", None)
+                        or getattr(message_chunk, "name", None)
+                    )
+                    card = tool_cards.get(key)
 
-                        if isinstance(content, str) and content:
-                            yield content
+                    if card is None and tool_cards:
+                        # fall back to the latest running card
+                        card = list(tool_cards.values())[-1]
 
-                        elif isinstance(content, list):
-                            for item in content:
-                                if (
-                                    isinstance(item, dict)
-                                    and item.get("type") == "text"
-                                    and item.get("text")
-                                ):
-                                    yield item["text"]
+                    if card is not None:
+                        card.update(
+                            label=f"✅ {pretty_tool_name(getattr(message_chunk, 'name', None))}",
+                            state="complete",
+                            expanded=False,
+                        )
+                    continue
 
-                ai_message = st.write_stream(response_stream())
+                if not isinstance(message_chunk, AIMessage):
+                    continue
+
+                # 2) LLM decided to call a tool -> show a tool card
+                for tc in getattr(message_chunk, "tool_call_chunks", None) or []:
+                    name = tc.get("name")
+                    if not name:
+                        continue  # later chunks only carry argument fragments
+
+                    key = tc.get("id") or name
+
+                    if key not in tool_cards:
+                        with tools_area:
+                            card = st.status(
+                                f"🔧 Using {pretty_tool_name(name)}...",
+                                state="running",
+                                expanded=False,
+                            )
+                            with card:
+                                st.caption("Working on it...")
+                        tool_cards[key] = card
+                        tools_used.append(name)
+
+                        # Drop any preamble text the model wrote before the tool call
+                        final_text = ""
+                        answer_area.markdown("_Nexora is thinking..._")
+
+                # 3) Normal LLM text -> stream into the answer (plain text only)
+                text = chunk_text(message_chunk.content)
+
+                if text:
+                    final_text += text
+                    answer_area.markdown(final_text + "▌")
+
+            # Final clean answer
+            answer_area.markdown(final_text)
 
             st.session_state["messages"].append({
                 "role": "assistant",
-                "content": ai_message
+                "content": final_text,
+                "tools": tools_used,
             })
 
         except Exception as error:
