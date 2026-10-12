@@ -169,4 +169,121 @@ def calculator(expression: str) -> str:
         return f"Calculation error: {error}"
 
 
+
+
+# stock tool 
+
+@tool
+
+def get_stock_price(symbol: str) -> dict:
+
+    """
+
+    Get the latest available stock price and trading information
+
+    for a company using its stock ticker symbol.
+
+    Examples:
+
+        AAPL = Apple
+
+        MSFT = Microsoft
+
+        IBM = IBM
+
+        RELIANCE.BSE = Reliance Industries on BSE, if supported.
+
+    Args:
+
+        symbol: Stock ticker symbol, such as AAPL or IBM.
+
+    """
+
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY")
+
+    if not api_key:
+
+        return {"error": "ALPHA_VANTAGE_API_KEY is missing from .env"}
+
+    try:
+
+        response = requests.get(
+
+            "https://www.alphavantage.co/query",
+
+            params={
+
+                "function": "GLOBAL_QUOTE",
+
+                "symbol": symbol.strip().upper(),
+
+                "apikey": api_key,
+
+            },
+
+            timeout=15,
+
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        # Handle API errors and rate limits
+
+        if "Error Message" in data:
+
+            return {"error": data["Error Message"]}
+
+        if "Note" in data or "Information" in data:
+
+            return {
+
+                "error": data.get("Note") or data.get("Information")
+
+            }
+
+        quote = data.get("Global Quote", {})
+
+        if not quote or not quote.get("05. price"):
+
+            return {
+
+                "error": (
+
+                    f"No stock quote found for '{symbol}'. "
+
+                    "Check the ticker symbol or API availability."
+
+                )
+
+            }
+
+        return {
+
+            "symbol": quote.get("01. symbol"),
+
+            "price": float(quote["05. price"]),
+
+            "latest_trading_day": quote.get("07. latest trading day"),
+
+            "previous_close": quote.get("08. previous close"),
+
+            "change": quote.get("09. change"),
+
+            "change_percent": quote.get("10. change percent"),
+
+            "volume": quote.get("06. volume"),
+
+            "source": "Alpha Vantage",
+
+        }
+
+    except requests.RequestException as e:
+
+        return {"error": f"Failed to fetch stock price: {str(e)}"}
+
+    except (ValueError, TypeError) as e:
+
+        return {"error": f"Invalid API response: {str(e)}"}
     
