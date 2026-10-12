@@ -95,4 +95,4 @@ Open the local URL displayed in your terminal to start interacting with Nexora A
 
 **Kashaf Khan**
 
-- GitHub: [@kashaf009](https://github.com/kashaf009/NexoraAi-Agentic-Chatbot.git)
+- GitHub: [@kashaf009](https://github.com/kashaf009)
