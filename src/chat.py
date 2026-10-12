@@ -5,12 +5,16 @@ from langchain_core.messages import BaseMessage, HumanMessage
 from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite import SqliteSaver  
 from langgraph.graph.message import add_messages
+from langgraph.prebuilt.tool_node import ToolNode,tools_condition
+from tools import search_tool,get_stock_price,calculator
 import os
 import sqlite3
 from langsmith import traceable
 
 
 load_dotenv()
+
+
 
 def llm():
     return ChatOpenAI(
@@ -28,23 +32,33 @@ class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage],add_messages]
 
 
+# bind tools
+tools = [search_tool,get_stock_price,calculator]
+model_with_tools = model.bind_tools(tools)
+
 
 def chat(state : ChatState):
 
     messages = state["messages"]
 
-    response = model.invoke(messages)
+    response = model_with_tools.invoke(messages)
 
     return {"messages":[response]}
+
+
+tool_node = ToolNode(tools)
 
 con= sqlite3.connect(database="chatbot.db",check_same_thread=False)
 checkpointer = SqliteSaver(conn=con)
 graph = StateGraph(ChatState)
 
 graph.add_node("chat_node",chat)
-
+graph.add_node("tools",tool_node)
+ 
 graph.add_edge(START,"chat_node")
-graph.add_edge("chat_node",END)
+graph.add_conditional_edges("chat_node",tools_condition)
+
+graph.add_edge("tools","chat_node")
 
 
 chatbot = graph.compile(checkpointer=checkpointer)
