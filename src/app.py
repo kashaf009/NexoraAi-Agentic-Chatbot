@@ -1,7 +1,11 @@
+import os
 import uuid
+import inspect
+import tempfile
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 from chat import chatbot, get_all_threads
+from rag import ingest_pdf
 
 
 # =====================================================
@@ -263,6 +267,17 @@ div[data-testid="stVerticalBlockBorderWrapper"] {
     margin-bottom: 10px;
 }
 
+/* File uploader */
+[data-testid="stFileUploader"] section {
+    background: #151824;
+    border: 1px dashed rgba(155,140,255,.35);
+    border-radius: 12px;
+}
+
+[data-testid="stFileUploader"] section:hover {
+    border-color: rgba(155,140,255,.7);
+}
+
 /* Chat input */
 [data-testid="stChatInput"] {
     border: 1px solid rgba(155,140,255,.32) !important;
@@ -371,6 +386,40 @@ def render_tool_cards(tools):
             st.caption("Tool call completed.")
 
 
+def run_ingest(file_bytes, filename, thread_id):
+    """Call ingest_pdf using whatever parameters it actually accepts."""
+    params = list(inspect.signature(ingest_pdf).parameters)
+
+    if not params:
+        return ingest_pdf()
+
+    first = params[0].lower()
+    tmp_path = None
+
+    # First argument: raw bytes, or a file path if the function expects one
+    if "path" in first:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+        first_value = tmp_path
+    else:
+        first_value = file_bytes
+
+    kwargs = {}
+    for param in params[1:]:
+        lowered = param.lower()
+        if "thread" in lowered:
+            kwargs[param] = thread_id
+        elif lowered in ("filename", "file_name", "name"):
+            kwargs[param] = filename
+
+    try:
+        return ingest_pdf(first_value, **kwargs)
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
 def load_conversation(thread_id):
     state = chatbot.get_state(
         config={"configurable": {"thread_id": thread_id}}
@@ -430,6 +479,10 @@ if "chat_threads" not in st.session_state:
 if "pending_prompt" not in st.session_state:
     st.session_state["pending_prompt"] = None
 
+if "ingested_docs" not in st.session_state:
+    # {thread_id: {filename: ingest_pdf summary}}
+    st.session_state["ingested_docs"] = {}
+
 add_thread(st.session_state["thread_id"])
 
 
@@ -474,6 +527,41 @@ with st.sidebar:
         ):
             load_thread(thread_id)
             st.rerun()
+
+    # ---------- Document upload ----------
+    st.markdown(
+        '<div class="sidebar-label">Documents</div>',
+        unsafe_allow_html=True
+    )
+
+    current_thread = st.session_state["thread_id"]
+    thread_docs = st.session_state["ingested_docs"].setdefault(current_thread, {})
+
+    uploaded_file = st.file_uploader(
+        "Upload a PDF",
+        type=["pdf"],
+        key=f"uploader_{current_thread}",
+        label_visibility="collapsed",
+        help="The PDF is indexed for this conversation so you can ask questions about it.",
+    )
+
+    if uploaded_file is not None and uploaded_file.name not in thread_docs:
+        with st.spinner(f"Ingesting {uploaded_file.name}..."):
+            try:
+                summary = run_ingest(
+                    uploaded_file.getvalue(),
+                    uploaded_file.name,
+                    current_thread,
+                )
+                thread_docs[uploaded_file.name] = summary
+                st.success(f"✅ {uploaded_file.name} is ready")
+            except Exception as error:
+                st.error(f"Could not ingest {uploaded_file.name}: {error}")
+
+    for doc_name, info in thread_docs.items():
+        chunks = info.get("chunks") if isinstance(info, dict) else None
+        suffix = f" · {chunks} chunks" if chunks else ""
+        st.caption(f"📄 {doc_name}{suffix}")
 
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.markdown("---")
@@ -632,6 +720,7 @@ if user_input:
         tool_cards = {}      # key -> st.status object
         tools_used = []      # tool names, saved with the message
         final_text = ""
+        had_error = False
 
         try:
             answer_area.markdown("_Nexora is thinking..._")
@@ -697,6 +786,27 @@ if user_input:
                     final_text += text
                     answer_area.markdown(final_text + "▌")
 
+            # Fallback: nothing streamed -> read this turn's reply from saved state
+            if not final_text.strip():
+                try:
+                    for saved_message in reversed(
+                        load_conversation(st.session_state["thread_id"])
+                    ):
+                        if isinstance(saved_message, HumanMessage):
+                            break  # don't pick up replies from earlier turns
+                        if (
+                            isinstance(saved_message, AIMessage)
+                            and not getattr(saved_message, "tool_calls", None)
+                        ):
+                            final_text = chunk_text(saved_message.content)
+                            if final_text.strip():
+                                break
+                except Exception:
+                    pass
+
+            if not final_text.strip():
+                final_text = "⚠️ The model returned an empty response. Please try again."
+
             # Final clean answer
             answer_area.markdown(final_text)
 
@@ -707,9 +817,14 @@ if user_input:
             })
 
         except Exception as error:
+            had_error = True
+            answer_area.empty()
             st.error(f"Something went wrong: {error}")
+            st.exception(error)
 
-    st.rerun()
+    # Don't rerun after an error, otherwise the error message disappears
+    if not had_error:
+        st.rerun()
 
 
 # =====================================================

@@ -29,7 +29,7 @@ def ingest_pdf(pdf_path: str) -> str:
     if not documents:
         raise ValueError("No readable pages found in the PDF.")
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000
+        chunk_size=1000,
         chunk_overlap=200,
     )
     chunks = text_splitter.split_documents(documents)
