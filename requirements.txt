@@ -46,3 +46,5 @@ xxhash==4.0.1
 zstandard==0.25.0
 langgraph-checkpoint-sqlite
 langchain-tavily
+langchain-community
+langchain-google-genai
