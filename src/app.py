@@ -4,6 +4,7 @@ import inspect
 import tempfile
 import streamlit as st
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
+from langgraph.types import Command
 from chat import chatbot, get_all_threads
 from rag import ingest_pdf
 
@@ -168,12 +169,23 @@ section[data-testid="stSidebar"] .stButton > button {
     font-size: 11px;
 }
 
+.status-pill.waiting {
+    border-color: rgba(255,190,90,0.3);
+    color: #ffd18a;
+    background: rgba(255,170,60,0.08);
+}
+
 .status-dot {
     width: 7px;
     height: 7px;
     background: #65dba0;
     border-radius: 50%;
     box-shadow: 0 0 10px #65dba0;
+}
+
+.status-pill.waiting .status-dot {
+    background: #ffb85c;
+    box-shadow: 0 0 10px #ffb85c;
 }
 
 /* Welcome hero */
@@ -346,12 +358,6 @@ def add_thread(thread_id):
         st.session_state["chat_threads"].append(thread_id)
 
 
-def reset_chat():
-    st.session_state["thread_id"] = generate_thread_id()
-    st.session_state["messages"] = []
-    add_thread(st.session_state["thread_id"])
-
-
 def pretty_tool_name(name):
     """search_tool -> Search Tool"""
     return (name or "tool").replace("_", " ").strip().title()
@@ -427,6 +433,31 @@ def load_conversation(thread_id):
     return state.values.get("messages", [])
 
 
+# ---------- HITL helper ----------
+def get_pending_interrupt(thread_id):
+    """Return the payload of a pending interrupt() for this thread, or None."""
+    try:
+        state = chatbot.get_state(
+            config={"configurable": {"thread_id": thread_id}}
+        )
+    except Exception:
+        return None
+
+    for task in getattr(state, "tasks", None) or []:
+        for item in getattr(task, "interrupts", None) or []:
+            return item.value
+    return None
+
+
+def reset_chat():
+    st.session_state["thread_id"] = generate_thread_id()
+    st.session_state["messages"] = []
+    st.session_state["pending_interrupt"] = None
+    st.session_state["resume_value"] = None
+    st.session_state["pending_tools"] = []
+    add_thread(st.session_state["thread_id"])
+
+
 def load_thread(thread_id):
     messages = load_conversation(thread_id)
     temp_messages = []
@@ -463,6 +494,11 @@ def load_thread(thread_id):
     st.session_state["thread_id"] = thread_id
     st.session_state["messages"] = temp_messages
 
+    # HITL: if this thread is paused waiting for approval, restore the card
+    st.session_state["resume_value"] = None
+    st.session_state["pending_interrupt"] = get_pending_interrupt(thread_id)
+    st.session_state["pending_tools"] = list(pending_tools)
+
 
 # =====================================================
 # SESSION STATE
@@ -482,6 +518,16 @@ if "pending_prompt" not in st.session_state:
 if "ingested_docs" not in st.session_state:
     # {thread_id: {filename: ingest_pdf summary}}
     st.session_state["ingested_docs"] = {}
+
+# ---------- HITL state ----------
+if "pending_interrupt" not in st.session_state:
+    st.session_state["pending_interrupt"] = None   # question shown on approval card
+
+if "resume_value" not in st.session_state:
+    st.session_state["resume_value"] = None        # "yes" / "no" after a click
+
+if "pending_tools" not in st.session_state:
+    st.session_state["pending_tools"] = []         # tool names carried across the pause
 
 add_thread(st.session_state["thread_id"])
 
@@ -581,12 +627,17 @@ with st.sidebar:
 # =====================================================
 # MAIN HEADER
 # =====================================================
-st.markdown("""
+if st.session_state["pending_interrupt"] is not None:
+    pill_class, pill_text = "status-pill waiting", "Waiting for your approval"
+else:
+    pill_class, pill_text = "status-pill", "Assistant ready"
+
+st.markdown(f"""
 <div class="topbar">
     <div class="topbar-title">✳ &nbsp; AI Workspace</div>
-    <div class="status-pill">
+    <div class="{pill_class}">
         <span class="status-dot"></span>
-        Assistant ready
+        {pill_text}
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -595,7 +646,7 @@ st.markdown("""
 # =====================================================
 # WELCOME SCREEN
 # =====================================================
-if not st.session_state["messages"]:
+if not st.session_state["messages"] and st.session_state["pending_interrupt"] is None:
 
     st.markdown("""
     <div class="hero">
@@ -687,14 +738,65 @@ else:
 
 
 # =====================================================
+# APPROVAL CARD (HITL)
+# =====================================================
+pending = st.session_state["pending_interrupt"]
+
+if pending is not None:
+    with st.container(border=True):
+        st.markdown("#### ⏸️ &nbsp; Approval required")
+
+        if isinstance(pending, dict):
+            for key, value in pending.items():
+                st.write(f"**{key}:** {value}")
+        else:
+            st.write(str(pending))
+
+        approve_col, reject_col = st.columns(2)
+
+        if approve_col.button(
+            "✅  Approve",
+            key="hitl_approve",
+            use_container_width=True,
+        ):
+            st.session_state["resume_value"] = "yes"
+            st.session_state["pending_interrupt"] = None
+            st.rerun()
+
+        if reject_col.button(
+            "❌  Reject",
+            key="hitl_reject",
+            use_container_width=True,
+        ):
+            st.session_state["resume_value"] = "no"
+            st.session_state["pending_interrupt"] = None
+            st.rerun()
+
+
+# =====================================================
 # CHAT INPUT AND RESPONSE
 # =====================================================
-typed_prompt = st.chat_input("Message Nexora AI...")
+typed_prompt = st.chat_input(
+    "Approve or reject the pending action above..."
+    if pending is not None
+    else "Message Nexora AI...",
+    disabled=pending is not None,
+)
 
 user_input = typed_prompt or st.session_state["pending_prompt"]
+resume_value = st.session_state["resume_value"]
 
-if user_input:
+payload = None
+carried_tools = []
 
+if resume_value is not None:
+    # User clicked Approve / Reject -> resume the paused graph
+    st.session_state["resume_value"] = None
+    carried_tools = st.session_state["pending_tools"]
+    st.session_state["pending_tools"] = []
+    payload = Command(resume=resume_value)
+
+elif user_input:
     st.session_state["pending_prompt"] = None
 
     st.session_state["messages"].append({
@@ -704,6 +806,11 @@ if user_input:
 
     with st.chat_message("user"):
         st.markdown(user_input)
+
+    payload = {"messages": [HumanMessage(content=user_input)]}
+
+
+if payload is not None:
 
     config = {
         "configurable": {
@@ -717,16 +824,20 @@ if user_input:
         tools_area = st.container()
         answer_area = st.empty()
 
-        tool_cards = {}      # key -> st.status object
-        tools_used = []      # tool names, saved with the message
+        tool_cards = {}                  # key -> st.status object
+        tools_used = list(carried_tools) # tool names, saved with the message
         final_text = ""
         had_error = False
 
         try:
-            answer_area.markdown("_Nexora is thinking..._")
+            answer_area.markdown(
+                "_Nexora is continuing..._"
+                if resume_value is not None
+                else "_Nexora is thinking..._"
+            )
 
             for message_chunk, metadata in chatbot.stream(
-                {"messages": [HumanMessage(content=user_input)]},
+                payload,
                 config=config,
                 stream_mode="messages"
             ):
@@ -773,7 +884,8 @@ if user_input:
                             with card:
                                 st.caption("Working on it...")
                         tool_cards[key] = card
-                        tools_used.append(name)
+                        if name not in tools_used:
+                            tools_used.append(name)
 
                         # Drop any preamble text the model wrote before the tool call
                         final_text = ""
@@ -786,35 +898,53 @@ if user_input:
                     final_text += text
                     answer_area.markdown(final_text + "▌")
 
-            # Fallback: nothing streamed -> read this turn's reply from saved state
-            if not final_text.strip():
-                try:
-                    for saved_message in reversed(
-                        load_conversation(st.session_state["thread_id"])
-                    ):
-                        if isinstance(saved_message, HumanMessage):
-                            break  # don't pick up replies from earlier turns
-                        if (
-                            isinstance(saved_message, AIMessage)
-                            and not getattr(saved_message, "tool_calls", None)
+            # ---- Did the graph pause on interrupt()? ----
+            pending_value = get_pending_interrupt(st.session_state["thread_id"])
+
+            if pending_value is not None:
+                # Graph is waiting for a human decision. Save the question,
+                # remember which tools ran, and show the approval card after rerun.
+                st.session_state["pending_interrupt"] = pending_value
+                st.session_state["pending_tools"] = tools_used
+                answer_area.empty()
+
+                for card in tool_cards.values():
+                    card.update(
+                        label="⏸️ Waiting for approval",
+                        state="running",
+                        expanded=False,
+                    )
+
+            else:
+                # Fallback: nothing streamed -> read this turn's reply from saved state
+                if not final_text.strip():
+                    try:
+                        for saved_message in reversed(
+                            load_conversation(st.session_state["thread_id"])
                         ):
-                            final_text = chunk_text(saved_message.content)
-                            if final_text.strip():
-                                break
-                except Exception:
-                    pass
+                            if isinstance(saved_message, HumanMessage):
+                                break  # don't pick up replies from earlier turns
+                            if (
+                                isinstance(saved_message, AIMessage)
+                                and not getattr(saved_message, "tool_calls", None)
+                            ):
+                                final_text = chunk_text(saved_message.content)
+                                if final_text.strip():
+                                    break
+                    except Exception:
+                        pass
 
-            if not final_text.strip():
-                final_text = "⚠️ The model returned an empty response. Please try again."
+                if not final_text.strip():
+                    final_text = "⚠️ The model returned an empty response. Please try again."
 
-            # Final clean answer
-            answer_area.markdown(final_text)
+                # Final clean answer
+                answer_area.markdown(final_text)
 
-            st.session_state["messages"].append({
-                "role": "assistant",
-                "content": final_text,
-                "tools": tools_used,
-            })
+                st.session_state["messages"].append({
+                    "role": "assistant",
+                    "content": final_text,
+                    "tools": tools_used,
+                })
 
         except Exception as error:
             had_error = True

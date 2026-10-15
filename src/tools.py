@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 import ast
 import operator
 from langchain_core.tools import tool
+from langgraph.types import interrupt
 
 
 load_dotenv()
@@ -286,4 +287,48 @@ def get_stock_price(symbol: str) -> dict:
     except (ValueError, TypeError) as e:
 
         return {"error": f"Invalid API response: {str(e)}"}
+
+
+
+@tool
+def purchase_stock(symbol: str, quantity: int) -> dict:
+    """
+    Simulate purchasing a stock.
+
+    Args:
+        symbol: Stock ticker symbol, such as AAPL or IBM.
+        quantity: Number of shares to purchase.
+
+    Returns:
+        A dictionary with the purchase details.
+        using hitl and dummy purchase logic. 
+    """
+    if quantity <= 0:
+        return {"error": "Quantity must be a positive integer."}
+
+    decision = interrupt(f"Approve buying {quantity} shares of {symbol}? (yes/no)")
+
+    if isinstance(decision,str) and decision.lower()=="yes":
+        
+        return {
+            "status": "Purchase approved and executed.",
+            "symbol": symbol,
+            "quantity": quantity,
+            "message": f"Successfully purchased {quantity} shares of {symbol}."
+        }
+
+    else:
+        return {
+            "status": "Purchase denied.",
+            "symbol": symbol,
+            "quantity": quantity,
+            "message": f"Purchase of {quantity} shares of {symbol} was not approved."
+        }
+
+    
+
+    
+
+    
+
     
