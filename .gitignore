@@ -11,5 +11,5 @@ wheels/
 .nexoraai
 
 src/html.txt
-
+faiss_db/
 chatbot.db*
