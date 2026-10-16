@@ -2,6 +2,7 @@ from langchain_tavily import TavilySearch
 import requests
 import os
 import math
+from urllib.parse import quote
 from dotenv import load_dotenv
 import ast
 import operator
@@ -22,6 +23,45 @@ search_tool = TavilySearch(
     search_depth="advanced",
 
 )
+
+
+# weather tool
+
+@tool
+def get_weather(city: str = "Patna") -> dict:
+    """Get the current weather for a city from wttr.in.
+
+    Args:
+        city: City name to look up. Defaults to Patna.
+
+    Returns:
+        The JSON weather data from wttr.in, or an error dictionary if the
+        request cannot be completed.
+    """
+    if not isinstance(city, str) or not city.strip():
+        return {"error": "Please provide a city name."}
+
+    city = city.strip()
+    weather_url = f"https://wttr.in/{quote(city, safe='')}?format=j1"
+
+    try:
+        response = requests.get(
+            weather_url,
+            headers={"User-Agent": "Nexora AI weather tool"},
+            timeout=15,
+        )
+        response.raise_for_status()
+        weather_data = response.json()
+
+        if not isinstance(weather_data, dict):
+            return {"error": "The weather API returned an unexpected response."}
+
+        return weather_data
+
+    except requests.RequestException as error:
+        return {"error": f"Failed to fetch weather for {city}: {error}"}
+    except (ValueError, TypeError) as error:
+        return {"error": f"Invalid weather API response: {error}"}
 
 
 # calculator tool
@@ -325,7 +365,8 @@ def purchase_stock(symbol: str, quantity: int) -> dict:
             "message": f"Purchase of {quantity} shares of {symbol} was not approved."
         }
 
-    
+
+
 
     
 
