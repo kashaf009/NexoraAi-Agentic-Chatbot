@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt.tool_node import ToolNode, tools_condition
-from tools import search_tool, get_stock_price, calculator,purchase_stock
+from tools import search_tool, get_weather, get_stock_price, calculator, purchase_stock
 import os
 import sqlite3
 from langsmith import traceable
@@ -33,7 +33,7 @@ class ChatState(TypedDict):
 
 
 # bind tools
-tools = [search_tool, get_stock_price, calculator, rag_tool, purchase_stock]
+tools = [search_tool, get_weather, get_stock_price, calculator, rag_tool, purchase_stock]
 model_with_tools = model.bind_tools(tools)
 
 
@@ -41,6 +41,8 @@ SYSTEM_PROMPT = """You are Nexora AI, an AI assistant.
 
 Tool instructions:
 - If the user asks a question related to stocks, use the get_stock_price tool.
+- If the user asks about current weather, use the get_weather tool. If no city
+  is specified, use its default location, Patna.
 - If the user asks a complex math question, use the calculator tool.
 - Use search_tool for current events and recent information.
 - Use rag_tool for questions about the uploaded PDF or document.
